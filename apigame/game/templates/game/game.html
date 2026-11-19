@@ -1,0 +1,527 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Data Dash</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fredoka:wght@500;700&family=JetBrains+Mono:wght@600&display=swap">
+<style>
+  html, body { margin: 0; height: 100%; background: #1d2b53; }
+  body { display: grid; place-items: center; font-family: "Fredoka", system-ui, sans-serif; }
+  canvas { width: min(100vw, calc(100vh * 1.6)); height: auto; max-height: 100vh; display: block;
+    border-radius: 14px; box-shadow: 0 10px 40px #0008; }
+  .lab { position: fixed; right: 12px; bottom: 10px; color: #c2c3c7; font-size: 13px; }
+  .lab a { color: #ffec27; }
+</style>
+</head>
+<body>
+<canvas id="game" width="960" height="600" tabindex="0"></canvas>
+<div class="lab">Arrows to move · Space to continue · <a href="/lab/">Open the lab view</a></div>
+
+<script>
+// =====================================================================
+//  DATA DASH: you are a data courier. Carry data from servers to the
+//  client app. REST = many trips to many URLs. GraphQL = one trip.
+//  Every pickup is a REAL request to this Django server.
+// =====================================================================
+const cv = document.getElementById("game"), ctx = cv.getContext("2d");
+const W = 960, H = 600, HUD = 78;
+const FONT = '"Fredoka", system-ui, sans-serif', MONO = '"JetBrains Mono", Consolas, monospace';
+const C = { grass1: "#7ed957", grass2: "#74cf4d", path: "#f4d58d", rest: "#16b6a1", gql: "#ff4f9a",
+  ink: "#1d2b53", white: "#fff8ee", yellow: "#ffcd3c", red: "#ff5a5a", green: "#2ecc71", grey: "#9aa0ad" };
+
+// ---------------------------------------------------------------- levels
+const LEVELS = [
+  { name: "Profile Card", need: "Sara's name + city",
+    rest: ["/api/users/1/"], decoys: ["/api/users/2/", "/api/users/1/posts/"],
+    gql: "{ user(id: 1) { name city } }",
+    lesson: ["OVER-FETCHING!", "REST sent the WHOLE user: email, phone, bio...",
+             "That heavy backpack slowed you down.", "GraphQL returned only name + city."] },
+  { name: "Blog List", need: "Sara's name + her post titles",
+    rest: ["/api/users/1/", "/api/users/1/posts/"], decoys: ["/api/users/3/", "/api/users/2/posts/"],
+    gql: "{ user(id: 1) { name posts { title } } }",
+    lesson: ["UNDER-FETCHING!", "One REST endpoint did not have everything,",
+             "so you needed an extra round trip.", "GraphQL followed user -> posts in ONE request."] },
+  { name: "Full Feed", need: "name + post titles + every comment author",
+    rest: ["/api/users/1/", "/api/users/1/posts/", "/api/posts/1/comments/", "/api/posts/2/comments/", "/api/posts/3/comments/"],
+    decoys: ["/api/users/2/posts/"],
+    gql: "{ user(id: 1) { name posts { title comments { author } } } }",
+    lesson: ["THE N+1 PROBLEM!", "REST: 1 user + 1 posts + 1 trip PER post.",
+             "With 100 posts that is 102 requests!", "GraphQL: still 1 request. (The server does the work.)"] },
+];
+const SLOTS = [[430, 150], [650, 140], [865, 175], [440, 480], [680, 500], [880, 395]];
+
+const QUIZ = [
+  ["Each resource has its own URL like /users/1", "REST"],
+  ["One endpoint, client picks the exact fields", "GraphQL"],
+  ["XML envelope described by a WSDL file", "SOAP"],
+  ["Easy HTTP caching of GET responses by CDNs", "REST"],
+  ["Always 200 OK, errors in an \"errors\" array", "GraphQL"],
+  ["Banks: strict contract + WS-Security", "SOAP"],
+  ["Uses 404, 201, 500 status codes for errors", "REST"],
+  ["Typed schema + introspection (GraphiQL)", "GraphQL"],
+  ["Mobile app on 3G needing nested data", "GraphQL"],
+  ["Simple CRUD API for a to-do app", "REST"],
+];
+const BINS = { REST: { key: "ArrowLeft", x: 190, color: C.rest, arrow: "<-" },
+               SOAP: { key: "ArrowDown", x: 480, color: "#8e7cc3", arrow: "v" },
+               GraphQL: { key: "ArrowRight", x: 770, color: C.gql, arrow: "->" } };
+
+// ---------------------------------------------------------------- state
+let scene = "title", lvl = 0, round = "rest", score = 0, frame = 0;
+let player, client, houses, carrying, stats, fetching = false;
+let popups = [], particles = [], clouds = [], results = [];
+let quiz = { i: 0, right: 0, fb: null, card: null };
+const keys = {};
+
+for (let i = 0; i < 5; i++) clouds.push({ x: Math.random() * W, y: HUD + 20 + Math.random() * 480, s: 0.6 + Math.random() * 0.8 });
+
+addEventListener("keydown", e => {
+  if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", " "].includes(e.key)) e.preventDefault();
+  if (!keys[e.key]) onPress(e.key);
+  keys[e.key] = true;
+});
+addEventListener("keyup", e => keys[e.key] = false);
+cv.addEventListener("click", () => { cv.focus(); onPress(" "); });
+
+function onPress(k) {
+  const go = k === " " || k === "Enter";
+  if (scene === "title" && go) { scene = "brief"; }
+  else if (scene === "brief" && go) startRound();
+  else if (scene === "result" && go) {
+    lvl++; round = "rest";
+    scene = lvl < LEVELS.length ? "brief" : "quizIntro";
+  }
+  else if (scene === "quizIntro" && go) { scene = "quiz"; quiz = { i: 0, right: 0, fb: null, card: newCard(0) }; }
+  else if (scene === "quiz" && !quiz.fb) {
+    for (const [name, b] of Object.entries(BINS)) if (k === b.key) answerQuiz(name);
+  }
+  else if (scene === "end" && go) { lvl = 0; round = "rest"; score = 0; results = []; scene = "title"; }
+}
+
+// ---------------------------------------------------------------- rounds
+function startRound() {
+  const L = LEVELS[lvl];
+  player = { x: 170, y: 340, dir: 1, moving: false };
+  client = { x: 80, y: 340 };
+  carrying = null; fetching = false; popups = [];
+  stats = { trips: 0, bytes: 0, frames: 0, wasted: 0, got: new Set() };
+  houses = [];
+  if (round === "rest") {
+    [...L.rest, ...L.decoys].forEach((url, i) => houses.push({
+      x: SLOTS[i][0], y: SLOTS[i][1], url, need: L.rest.includes(url), done: false, cool: 0,
+      lock: url.includes("/comments/") && L.rest.includes("/api/users/1/posts/") ? "/api/users/1/posts/" : null }));
+  } else {
+    houses.push({ x: 660, y: 330, url: "/graphql/", need: true, done: false, cool: 0, gql: true, big: true });
+  }
+  scene = "play";
+}
+
+// Real request to Django when the page is served by `manage.py runserver`.
+// If the server can't be reached (e.g. the HTML file was opened directly),
+// fall back to built-in copies of the exact same responses so the game still works.
+let offlineMode = false;
+async function pickup(h) {
+  fetching = true;
+  const L = LEVELS[lvl];
+  let text;
+  try {
+    if (location.protocol === "file:") throw new Error("no server");
+    const res = h.gql
+      ? await fetch("/graphql/", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ query: L.gql }) })
+      : await fetch(h.url);
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    text = await res.text();
+    JSON.parse(text);
+  } catch (e) {
+    text = OFFLINE[h.gql ? "gql" + lvl : h.url];
+    if (!offlineMode) { offlineMode = true; console.warn("API not reachable, using built-in responses:", e.message); }
+  }
+  carrying = { url: h.url, bytes: text.length, need: h.need, house: h };
+  stats.trips++; stats.bytes += text.length;
+  pop(h.x, h.y - 70, `+${text.length} bytes`, C.white);
+  if (!h.need) { stats.wasted++; pop(h.x, h.y - 100, "Useless data!", C.red); }
+  fetching = false;
+}
+
+const OFFLINE = {"/api/users/1/": "{\"id\": 1, \"name\": \"Sara\", \"email\": \"sara@uni.edu\", \"phone\": \"555-0101\", \"city\": \"Cairo\", \"bio\": \"Backend student who loves APIs and coffee. Backend student who loves APIs and coffee. Backend student who loves APIs and coffee. Backend student who loves APIs and coffee. \", \"joined\": \"2024-01-10\"}", "/api/users/2/": "{\"id\": 2, \"name\": \"Omar\", \"email\": \"omar@uni.edu\", \"phone\": \"555-0102\", \"city\": \"Tunis\", \"bio\": \"Frontend dev, React fan, part-time gamer. Frontend dev, React fan, part-time gamer. Frontend dev, React fan, part-time gamer. Frontend dev, React fan, part-time gamer. \", \"joined\": \"2024-03-22\"}", "/api/users/3/": "{\"id\": 3, \"name\": \"Lina\", \"email\": \"lina@uni.edu\", \"phone\": \"555-0103\", \"city\": \"Rabat\", \"bio\": \"Mobile developer building apps for slow networks. Mobile developer building apps for slow networks. Mobile developer building apps for slow networks. Mobile developer building apps for slow networks. \", \"joined\": \"2024-06-05\"}", "/api/users/1/posts/": "[{\"id\": 1, \"user_id\": 1, \"title\": \"Intro to REST\", \"likes\": 12, \"body\": \"REST exposes resources at URLs and uses HTTP verbs like GET and POST. REST exposes resources at URLs and uses HTTP verbs like GET and POST. REST exposes resources at URLs and uses HTTP verbs like GET and POST. REST exposes resources at URLs and uses HTTP verbs like GET and POST. REST exposes resources at URLs and uses HTTP verbs like GET and POST. REST exposes resources at URLs and uses HTTP verbs like GET and POST. \"}, {\"id\": 2, \"user_id\": 1, \"title\": \"Why GraphQL?\", \"likes\": 30, \"body\": \"GraphQL lets the client ask for exactly the fields it needs in one request. GraphQL lets the client ask for exactly the fields it needs in one request. GraphQL lets the client ask for exactly the fields it needs in one request. GraphQL lets the client ask for exactly the fields it needs in one request. GraphQL lets the client ask for exactly the fields it needs in one request. GraphQL lets the client ask for exactly the fields it needs in one request. \"}, {\"id\": 3, \"user_id\": 1, \"title\": \"SOAP is not dead\", \"likes\": 4, \"body\": \"Banks and governments still run on SOAP with strict WSDL contracts. Banks and governments still run on SOAP with strict WSDL contracts. Banks and governments still run on SOAP with strict WSDL contracts. Banks and governments still run on SOAP with strict WSDL contracts. Banks and governments still run on SOAP with strict WSDL contracts. Banks and governments still run on SOAP with strict WSDL contracts. \"}]", "/api/users/2/posts/": "[{\"id\": 4, \"user_id\": 2, \"title\": \"React + APIs\", \"likes\": 8, \"body\": \"Fetching data in React with fetch, Axios and Apollo Client. Fetching data in React with fetch, Axios and Apollo Client. Fetching data in React with fetch, Axios and Apollo Client. Fetching data in React with fetch, Axios and Apollo Client. Fetching data in React with fetch, Axios and Apollo Client. Fetching data in React with fetch, Axios and Apollo Client. \"}]", "/api/users/3/posts/": "[{\"id\": 5, \"user_id\": 3, \"title\": \"Saving mobile data\", \"likes\": 21, \"body\": \"Every kilobyte matters on a 3G connection. Every kilobyte matters on a 3G connection. Every kilobyte matters on a 3G connection. Every kilobyte matters on a 3G connection. Every kilobyte matters on a 3G connection. Every kilobyte matters on a 3G connection. \"}]", "/api/posts/1/comments/": "[{\"id\": 1, \"post_id\": 1, \"author\": \"Ali\", \"text\": \"Great intro!\"}, {\"id\": 2, \"post_id\": 1, \"author\": \"Mona\", \"text\": \"Very clear, thanks.\"}]", "/api/posts/2/comments/": "[{\"id\": 3, \"post_id\": 2, \"author\": \"Omar\", \"text\": \"GraphQL for the win.\"}]", "/api/posts/3/comments/": "[{\"id\": 4, \"post_id\": 3, \"author\": \"Lina\", \"text\": \"My bank still uses it!\"}, {\"id\": 5, \"post_id\": 3, \"author\": \"Ali\", \"text\": \"XML everywhere...\"}]", "/api/posts/4/comments/": "[{\"id\": 6, \"post_id\": 4, \"author\": \"Sara\", \"text\": \"Nice examples.\"}]", "/api/posts/5/comments/": "[{\"id\": 7, \"post_id\": 5, \"author\": \"Omar\", \"text\": \"So true on 3G.\"}]", "gql0": "{\"data\":{\"user\":{\"name\":\"Sara\",\"city\":\"Cairo\"}}}", "gql1": "{\"data\":{\"user\":{\"name\":\"Sara\",\"posts\":[{\"title\":\"Intro to REST\"},{\"title\":\"Why GraphQL?\"},{\"title\":\"SOAP is not dead\"}]}}}", "gql2": "{\"data\":{\"user\":{\"name\":\"Sara\",\"posts\":[{\"title\":\"Intro to REST\",\"comments\":[{\"author\":\"Ali\"},{\"author\":\"Mona\"}]},{\"title\":\"Why GraphQL?\",\"comments\":[{\"author\":\"Omar\"}]},{\"title\":\"SOAP is not dead\",\"comments\":[{\"author\":\"Lina\"},{\"author\":\"Ali\"}]}]}}}"};
+
+function deliver() {
+  const c = carrying; carrying = null;
+  if (c.need) { c.house.done = true; stats.got.add(c.url); burst(client.x, client.y - 30, C.yellow); pop(client.x + 30, client.y - 90, "Delivered!", C.yellow); }
+  else pop(client.x + 30, client.y - 90, "App didn't need that...", C.red);
+  if (houses.filter(h => h.need).every(h => h.done)) finishRound();
+}
+
+function finishRound() {
+  const secs = stats.frames / 60;
+  const pts = Math.max(100, Math.round(1000 - secs * 15 - stats.wasted * 150));
+  score += pts;
+  results[lvl] = results[lvl] || {};
+  results[lvl][round] = { trips: stats.trips, bytes: stats.bytes, secs, pts };
+  burst(W / 2, H / 2, C.yellow, 60);
+  if (round === "rest") { round = "gql"; scene = "brief"; } else scene = "result";
+}
+
+// ---------------------------------------------------------------- update
+function update() {
+  frame++;
+  clouds.forEach(c => { c.x += 0.15 * c.s; if (c.x > W + 80) c.x = -80; });
+  particles.forEach(p => { p.x += p.vx; p.y += p.vy; p.vy += 0.15; p.life--; });
+  particles = particles.filter(p => p.life > 0);
+  popups.forEach(p => { p.y -= 0.6; p.life--; });
+  popups = popups.filter(p => p.life > 0);
+
+  if (scene === "play") {
+    stats.frames++;
+    const load = carrying ? carrying.bytes : 0;
+    const speed = Math.max(1.4, 4.4 - load / 380);
+    let dx = (keys.ArrowRight || keys.d ? 1 : 0) - (keys.ArrowLeft || keys.a ? 1 : 0);
+    let dy = (keys.ArrowDown || keys.s ? 1 : 0) - (keys.ArrowUp || keys.w ? 1 : 0);
+    if (dx && dy) { dx *= 0.707; dy *= 0.707; }
+    player.moving = !!(dx || dy);
+    if (dx) player.dir = Math.sign(dx);
+    player.x = Math.min(W - 25, Math.max(25, player.x + dx * speed));
+    player.y = Math.min(H - 25, Math.max(HUD + 30, player.y + dy * speed));
+
+    for (const h of houses) {
+      if (h.cool > 0) { h.cool--; continue; }
+      if (dist(player, h) > (h.big ? 80 : 55) || fetching) continue;
+      h.cool = 70;
+      if (carrying) { pop(h.x, h.y - 80, "Deliver first! 1 request = 1 trip", C.white); continue; }
+      if (h.lock && !stats.got.has(h.lock)) { pop(h.x, h.y - 80, "Locked! Get the post IDs first", C.white); continue; }
+      if (h.done) { pop(h.x, h.y - 80, "Already got this", C.white); continue; }
+      pickup(h);
+    }
+    if (carrying && dist(player, client) < 65) deliver();
+  }
+
+  if (scene === "quiz" && quiz.fb) {
+    quiz.fb.t--;
+    const card = quiz.card;
+    if (quiz.fb.target) { card.x += (quiz.fb.target - card.x) * 0.15; card.y += (470 - card.y) * 0.15; card.s *= 0.97; }
+    if (quiz.fb.t <= 0) {
+      quiz.i++; quiz.fb = null;
+      if (quiz.i >= QUIZ.length) scene = "end"; else quiz.card = newCard(quiz.i);
+    }
+  }
+  if (scene === "quiz" && !quiz.fb) quiz.card.y = 250 + Math.sin(frame / 20) * 6;
+}
+
+function newCard(i) { return { x: W / 2, y: 250, s: 1, text: QUIZ[i][0] }; }
+
+function answerQuiz(name) {
+  const correct = QUIZ[quiz.i][1];
+  const ok = name === correct;
+  if (ok) { quiz.right++; score += 100; burst(BINS[name].x, 470, C.yellow, 30); }
+  quiz.fb = { ok, picked: name, correct, t: ok ? 60 : 120, target: BINS[name].x };
+}
+
+// ---------------------------------------------------------------- drawing helpers
+function dist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
+function pop(x, y, text, color) { popups.push({ x, y, text, color, life: 90 }); }
+function burst(x, y, color, n = 24) {
+  for (let i = 0; i < n; i++) {
+    const a = Math.random() * Math.PI * 2, s = 2 + Math.random() * 4;
+    particles.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s - 2, life: 50 + Math.random() * 30, color: Math.random() < .5 ? color : C.white });
+  }
+}
+function rr(x, y, w, h, r) { ctx.beginPath(); ctx.roundRect(x, y, w, h, r); }
+function text(t, x, y, size, color, align = "center", font = FONT, weight = 700) {
+  ctx.font = `${weight} ${size}px ${font}`; ctx.fillStyle = color; ctx.textAlign = align; ctx.textBaseline = "middle";
+  ctx.fillText(t, x, y);
+}
+function outlined(t, x, y, size, color) {
+  ctx.font = `700 ${size}px ${FONT}`; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.lineWidth = size / 5; ctx.strokeStyle = C.ink; ctx.lineJoin = "round"; ctx.strokeText(t, x, y);
+  ctx.fillStyle = color; ctx.fillText(t, x, y);
+}
+function panel(x, y, w, h, fill = C.white) {
+  ctx.fillStyle = "#0003"; rr(x + 6, y + 8, w, h, 22); ctx.fill();
+  ctx.fillStyle = fill; rr(x, y, w, h, 22); ctx.fill();
+  ctx.lineWidth = 5; ctx.strokeStyle = C.ink; ctx.stroke();
+}
+
+function drawWorld() {
+  for (let y = HUD; y < H; y += 40) { ctx.fillStyle = (y / 40) % 2 ? C.grass1 : C.grass2; ctx.fillRect(0, y, W, 40); }
+  // dirt path from the client
+  ctx.strokeStyle = C.path; ctx.lineWidth = 46; ctx.lineCap = "round";
+  ctx.beginPath(); ctx.moveTo(80, 340); ctx.lineTo(330, 340); ctx.stroke();
+  // flowers
+  for (let i = 0; i < 26; i++) {
+    const fx = (i * 137) % W, fy = HUD + 20 + (i * 89) % (H - HUD - 30);
+    ctx.fillStyle = ["#fff", "#ffec27", "#ff77a8"][i % 3]; ctx.beginPath(); ctx.arc(fx, fy, 3, 0, 7); ctx.fill();
+  }
+  clouds.forEach(c => { ctx.fillStyle = "#ffffff20"; ctx.beginPath(); ctx.ellipse(c.x, c.y, 60 * c.s, 22 * c.s, 0, 0, 7); ctx.fill(); });
+}
+
+function drawClient() {
+  const { x, y } = client, b = Math.sin(frame / 15) * 2;
+  ctx.fillStyle = "#0002"; ctx.beginPath(); ctx.ellipse(x, y + 52, 36, 10, 0, 0, 7); ctx.fill();
+  ctx.fillStyle = C.ink; rr(x - 32, y - 55 + b, 64, 105, 14); ctx.fill();
+  ctx.fillStyle = "#83e8ff"; rr(x - 25, y - 45 + b, 50, 80, 8); ctx.fill();
+  // face on the screen
+  ctx.fillStyle = C.ink; ctx.beginPath(); ctx.arc(x - 9, y - 15 + b, 4, 0, 7); ctx.arc(x + 9, y - 15 + b, 4, 0, 7); ctx.fill();
+  ctx.lineWidth = 3; ctx.strokeStyle = C.ink; ctx.beginPath();
+  if (carrying) ctx.arc(x, y - 2 + b, 9, 0.1, Math.PI - 0.1); else ctx.arc(x, y + 2 + b, 7, Math.PI + 0.3, -0.3);
+  ctx.stroke();
+  outlined("CLIENT", x, y + 72, 17, C.yellow);
+  text("(your app)", x, y + 92, 12, C.ink, "center", FONT, 500);
+}
+
+function drawHouse(h) {
+  const locked = h.lock && !stats.got.has(h.lock);
+  const col = h.gql ? C.gql : locked ? C.grey : C.rest;
+  const s = h.big ? 1.6 : 1;
+  const w = 74 * s, bh = 52 * s, x = h.x, y = h.y;
+  // glow for houses the mission needs
+  if (h.need && !h.done && !locked) {
+    ctx.fillStyle = `rgba(255,236,39,${0.25 + 0.15 * Math.sin(frame / 10)})`;
+    ctx.beginPath(); ctx.ellipse(x, y + 10, w * 0.85, bh * 0.95, 0, 0, 7); ctx.fill();
+  }
+  ctx.fillStyle = "#0002"; ctx.beginPath(); ctx.ellipse(x, y + bh / 2 + 6, w / 1.6, 9, 0, 0, 7); ctx.fill();
+  // body
+  ctx.fillStyle = col; rr(x - w / 2, y - bh / 2, w, bh, 8); ctx.fill();
+  ctx.lineWidth = 4; ctx.strokeStyle = C.ink; ctx.stroke();
+  // roof
+  ctx.fillStyle = h.gql ? "#b8125f" : locked ? "#6b7080" : "#0b7d6f";
+  ctx.beginPath(); ctx.moveTo(x - w / 2 - 10, y - bh / 2 + 4); ctx.lineTo(x, y - bh / 2 - 34 * s); ctx.lineTo(x + w / 2 + 10, y - bh / 2 + 4); ctx.closePath();
+  ctx.fill(); ctx.stroke();
+  // door + window
+  ctx.fillStyle = C.ink; rr(x - 9 * s, y + bh / 2 - 26 * s, 18 * s, 26 * s, 5); ctx.fill();
+  ctx.fillStyle = "#ffeaa0"; rr(x + 14 * s, y - 12 * s, 14 * s, 12 * s, 3); ctx.fill();
+  rr(x - 28 * s, y - 12 * s, 14 * s, 12 * s, 3); ctx.fill();
+  if (h.gql) outlined("GraphQL", x, y - bh / 2 - 6, 20, C.white);
+  // URL sign
+  ctx.font = `600 12px ${MONO}`;
+  const label = (h.gql ? "POST " : "GET ") + h.url, tw = ctx.measureText(label).width + 16;
+  ctx.fillStyle = C.white; rr(x - tw / 2, y + bh / 2 + 10, tw, 22, 6); ctx.fill();
+  ctx.lineWidth = 2.5; ctx.strokeStyle = C.ink; ctx.stroke();
+  text(label, x, y + bh / 2 + 21.5, 12, C.ink, "center", MONO, 600);
+  if (locked) { outlined("LOCKED", x, y - 4, 16, C.white); }
+  if (h.done) {
+    ctx.fillStyle = C.green; ctx.beginPath(); ctx.arc(x + w / 2, y - bh / 2, 15, 0, 7); ctx.fill();
+    ctx.lineWidth = 3; ctx.strokeStyle = C.ink; ctx.stroke();
+    ctx.strokeStyle = "#fff"; ctx.lineWidth = 4; ctx.beginPath();
+    ctx.moveTo(x + w / 2 - 7, y - bh / 2); ctx.lineTo(x + w / 2 - 2, y - bh / 2 + 6); ctx.lineTo(x + w / 2 + 8, y - bh / 2 - 6); ctx.stroke();
+  }
+}
+
+function drawPlayer() {
+  const { x, y, dir } = player;
+  const bob = player.moving ? Math.abs(Math.sin(frame / 5)) * 5 : Math.sin(frame / 20) * 1.5;
+  const load = carrying ? carrying.bytes : 0;
+  ctx.fillStyle = "#0003"; ctx.beginPath(); ctx.ellipse(x, y + 24, 22, 7, 0, 0, 7); ctx.fill();
+  // feet
+  const step = player.moving ? Math.sin(frame / 4) * 6 : 0;
+  ctx.fillStyle = C.ink;
+  ctx.beginPath(); ctx.ellipse(x - 9 + step, y + 21, 8, 5, 0, 0, 7); ctx.ellipse(x + 9 - step, y + 21, 8, 5, 0, 0, 7); ctx.fill();
+  // backpack grows with bytes carried (over-fetching = heavy!)
+  if (carrying) {
+    const bw = 18 + Math.min(42, load / 40), bhh = 22 + Math.min(40, load / 45);
+    ctx.fillStyle = carrying.need ? "#c98a4b" : "#7d7d7d";
+    rr(x - dir * 18 - bw / 2, y - 14 - bob - bhh / 2, bw, bhh, 7); ctx.fill();
+    ctx.lineWidth = 3; ctx.strokeStyle = C.ink; ctx.stroke();
+    ctx.strokeStyle = "#8a5a2b"; ctx.beginPath(); ctx.moveTo(x - dir * 18 - bw / 2, y - 14 - bob); ctx.lineTo(x - dir * 18 + bw / 2, y - 14 - bob); ctx.stroke();
+  }
+  // body
+  ctx.fillStyle = C.yellow; ctx.beginPath(); ctx.arc(x, y - bob, 22, 0, 7); ctx.fill();
+  ctx.lineWidth = 4; ctx.strokeStyle = C.ink; ctx.stroke();
+  // cap
+  ctx.fillStyle = C.red; ctx.beginPath(); ctx.arc(x, y - 8 - bob, 21, Math.PI, 0); ctx.fill(); ctx.stroke();
+  ctx.fillRect(x + dir * 6, y - 11 - bob, dir * 20, 5);
+  // eyes
+  const ex = dir * 5;
+  ctx.fillStyle = "#fff"; ctx.beginPath(); ctx.arc(x - 6 + ex, y + 1 - bob, 6, 0, 7); ctx.arc(x + 8 + ex, y + 1 - bob, 6, 0, 7); ctx.fill();
+  ctx.fillStyle = C.ink; ctx.beginPath(); ctx.arc(x - 5 + ex + dir * 2, y + 2 - bob, 3, 0, 7); ctx.arc(x + 9 + ex + dir * 2, y + 2 - bob, 3, 0, 7); ctx.fill();
+  // sweat when heavy
+  if (load > 600 && frame % 40 < 20) { ctx.fillStyle = "#83e8ff"; ctx.beginPath(); ctx.ellipse(x - dir * 24, y - 22 - bob, 4, 6, 0, 0, 7); ctx.fill(); }
+  if (carrying) outlined(`${load} B`, x, y - 50 - bob, 14, load > 600 ? C.red : C.white);
+}
+
+function drawHUD() {
+  const L = LEVELS[lvl];
+  ctx.fillStyle = C.ink; ctx.fillRect(0, 0, W, HUD);
+  const col = round === "rest" ? C.rest : C.gql;
+  ctx.fillStyle = col; rr(14, 12, 138, 54, 12); ctx.fill();
+  text(round === "rest" ? "REST" : "GraphQL", 83, 32, 22, "#fff");
+  text(`Level ${lvl + 1}/${LEVELS.length}`, 83, 53, 13, "#fff", "center", FONT, 500);
+  text(`Mission: ${L.name}`, 170, 27, 20, C.yellow, "left");
+  text(`Needs: ${L.need}`, 170, 52, 15, "#fff", "left", FONT, 500);
+  const items = [["Requests", stats.trips], ["Bytes", stats.bytes], ["Time", (stats.frames / 60).toFixed(1) + "s"], ["Score", score]];
+  items.forEach(([k, v], i) => {
+    const x = 610 + i * 88;
+    text(k, x, 26, 12, "#c2c3c7", "center", FONT, 500);
+    text(String(v), x, 50, 20, i === 3 ? C.yellow : "#fff");
+  });
+}
+
+function drawTip() {
+  let tip = carrying ? "Carry it back to the CLIENT!" :
+    round === "rest" ? "Visit the GLOWING houses. One request = one round trip." : "Just ONE trip to the GraphQL server!";
+  if (round === "gql") {
+    ctx.font = `600 13px ${MONO}`;
+    const q = LEVELS[lvl].gql, tw = ctx.measureText(q).width + 24;
+    ctx.fillStyle = "#1d2b53e0"; rr(W / 2 - tw / 2 + 60, H - 46, tw, 32, 10); ctx.fill();
+    text(q, W / 2 + 60, H - 30, 13, "#ff9cc6", "center", MONO, 600);
+    tip = carrying ? tip : "Your query:";
+    outlined(tip, W / 2 + 60, H - 64, 16, "#fff");
+  } else outlined(tip, W / 2 + 60, H - 26, 17, "#fff");
+}
+
+// ---------------------------------------------------------------- scenes
+function drawTitle() {
+  drawWorld();
+  ctx.fillStyle = "#1d2b5399"; ctx.fillRect(0, 0, W, H);
+  outlined("DATA DASH!", W / 2, 140 + Math.sin(frame / 20) * 6, 84, C.yellow);
+  outlined("REST  vs  GraphQL", W / 2, 215, 34, "#fff");
+  player = { x: W / 2, y: 330, dir: Math.sin(frame / 60) > 0 ? 1 : -1, moving: true }; carrying = null;
+  drawPlayer();
+  panel(W / 2 - 300, 390, 600, 130);
+  text("You are a data courier. Carry data from the SERVERS", W / 2, 420, 19, C.ink, "center", FONT, 500);
+  text("to the CLIENT app as fast as you can.", W / 2, 447, 19, C.ink, "center", FONT, 500);
+  text("Move with the ARROW keys", W / 2, 488, 20, C.rest);
+  if (frame % 60 < 40) outlined("Press SPACE to start", W / 2, 560, 26, "#fff");
+}
+
+function drawBrief() {
+  drawWorld();
+  ctx.fillStyle = "#1d2b53aa"; ctx.fillRect(0, 0, W, H);
+  const L = LEVELS[lvl], isRest = round === "rest";
+  panel(140, 70, 680, 460);
+  text(`LEVEL ${lvl + 1}: ${L.name.toUpperCase()}`, W / 2, 115, 32, C.ink);
+  text(`The app needs: ${L.need}`, W / 2, 158, 19, C.ink, "center", FONT, 500);
+  ctx.fillStyle = isRest ? C.rest : C.gql; rr(W / 2 - 150, 185, 300, 50, 25); ctx.fill();
+  text(isRest ? "ROUND 1: REST" : "ROUND 2: GraphQL", W / 2, 210, 24, "#fff");
+  const lines = isRest ? [
+    "REST has many URLs, one for each resource.",
+    "Each house is an endpoint. Visit the GLOWING ones.",
+    "You can carry ONE response at a time (1 request = 1 trip).",
+    "Big responses make your backpack HEAVY and slow!",
+  ] : [
+    "GraphQL has ONE URL: /graphql/",
+    "You send a query that lists exactly the fields you need:",
+  ];
+  lines.forEach((l, i) => text(l, W / 2, 268 + i * 34, 18, C.ink, "center", FONT, 500));
+  if (!isRest) {
+    ctx.fillStyle = C.ink; rr(180, 345, 600, 50, 10); ctx.fill();
+    text(L.gql, W / 2, 370, 15, "#ff9cc6", "center", MONO, 600);
+    text("One trip, a light backpack, and only the data you asked for.", W / 2, 425, 18, C.ink, "center", FONT, 500);
+  }
+  if (frame % 60 < 40) text("Press SPACE to go!", W / 2, 495, 24, isRest ? C.rest : C.gql);
+}
+
+function drawPlay() {
+  drawWorld();
+  houses.forEach(drawHouse);
+  drawClient();
+  drawPlayer();
+  drawTip();
+  drawHUD();
+}
+
+function drawResult() {
+  drawWorld();
+  ctx.fillStyle = "#1d2b53aa"; ctx.fillRect(0, 0, W, H);
+  const L = LEVELS[lvl], r = results[lvl];
+  panel(110, 40, 740, 520);
+  text(`LEVEL ${lvl + 1} RESULTS: ${L.name}`, W / 2, 85, 30, C.ink);
+  const rows = [["Requests", "trips"], ["Bytes", "bytes"], ["Seconds", "secs"]];
+  rows.forEach(([label, k], i) => {
+    const y = 140 + i * 70, max = Math.max(r.rest[k], r.gql[k], 0.001);
+    text(label, 150, y + 18, 18, C.ink, "left");
+    [["rest", C.rest], ["gql", C.gql]].forEach(([side, col], j) => {
+      const by = y + j * 26, bw = 420 * r[side][k] / max;
+      ctx.fillStyle = "#e9e3d6"; rr(270, by, 420, 20, 10); ctx.fill();
+      ctx.fillStyle = col; rr(270, by, Math.max(20, bw), 20, 10); ctx.fill();
+      const v = k === "secs" ? r[side][k].toFixed(1) : r[side][k];
+      text(`${side === "rest" ? "REST" : "GraphQL"}: ${v}`, 700, by + 10, 15, col, "left");
+    });
+  });
+  ctx.fillStyle = "#fff3c4"; rr(150, 360, 660, 140, 16); ctx.fill();
+  L.lesson.forEach((l, i) => text(l, W / 2, 388 + i * 30, i === 0 ? 24 : 18, i === 0 ? C.red : C.ink, "center", FONT, i === 0 ? 700 : 500));
+  if (frame % 60 < 40) text(lvl + 1 < LEVELS.length ? "Press SPACE for the next level" : "Press SPACE for the BONUS round", W / 2, 532, 20, C.ink);
+}
+
+function drawQuizIntro() {
+  drawWorld(); ctx.fillStyle = "#1d2b53aa"; ctx.fillRect(0, 0, W, H);
+  panel(160, 110, 640, 380);
+  text("BONUS ROUND: SORT IT!", W / 2, 160, 34, C.ink);
+  text("A card appears. Which API style does it describe?", W / 2, 215, 19, C.ink, "center", FONT, 500);
+  [["<-  LEFT", "REST", C.rest], ["v  DOWN", "SOAP", "#8e7cc3"], ["->  RIGHT", "GraphQL", C.gql]].forEach(([k, n, c], i) => {
+    const x = 270 + i * 210;
+    ctx.fillStyle = c; rr(x - 85, 260, 170, 110, 18); ctx.fill();
+    text(k, x, 295, 20, "#fff"); text(n, x, 335, 26, "#fff");
+  });
+  text("+100 points for each correct answer", W / 2, 410, 18, C.ink, "center", FONT, 500);
+  if (frame % 60 < 40) text("Press SPACE to start", W / 2, 455, 24, C.gql);
+}
+
+function drawQuiz() {
+  drawWorld(); ctx.fillStyle = "#1d2b5366"; ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = C.ink; ctx.fillRect(0, 0, W, 60);
+  text(`BONUS ROUND  ${Math.min(quiz.i + 1, QUIZ.length)}/${QUIZ.length}`, 20, 30, 22, "#fff", "left");
+  text(`Score ${score}`, W - 20, 30, 22, C.yellow, "right");
+  // bins
+  Object.entries(BINS).forEach(([name, b]) => {
+    const hit = quiz.fb && (quiz.fb.correct === name);
+    ctx.fillStyle = b.color; rr(b.x - 110, 440, 220, 120, 20); ctx.fill();
+    ctx.lineWidth = hit ? 8 : 4; ctx.strokeStyle = hit ? C.yellow : C.ink; ctx.stroke();
+    text(name, b.x, 485, 30, "#fff");
+    text(b.arrow, b.x, 525, 26, "#fff");
+  });
+  // card
+  const c = quiz.card;
+  ctx.save(); ctx.translate(c.x, c.y); ctx.scale(c.s, c.s);
+  if (quiz.fb && !quiz.fb.ok) ctx.rotate(Math.sin(frame) * 0.04);
+  panel(-300, -70, 600, 140);
+  ctx.font = `700 24px ${FONT}`;
+  wrap(c.text, 0, 0, 540, 30, 24);
+  ctx.restore();
+  if (quiz.fb) {
+    if (quiz.fb.ok) outlined("CORRECT!  +100", W / 2, 120, 36, C.green);
+    else outlined(`Nope! That's ${quiz.fb.correct}`, W / 2, 120, 36, C.red);
+  } else outlined("<- REST     v SOAP     GraphQL ->", W / 2, 120, 24, "#fff");
+}
+
+function drawEnd() {
+  drawWorld(); ctx.fillStyle = "#1d2b53aa"; ctx.fillRect(0, 0, W, H);
+  outlined("YOU WIN!", W / 2, 110 + Math.sin(frame / 15) * 6, 72, C.yellow);
+  panel(170, 170, 620, 330);
+  text(`Final score: ${score}`, W / 2, 215, 36, C.ink);
+  text(`Bonus round: ${quiz.right}/${QUIZ.length} correct`, W / 2, 260, 20, C.ink, "center", FONT, 500);
+  const sum = s => results.reduce((t, r) => t + r[s].trips, 0);
+  text(`Total requests  REST: ${sum("rest")}   GraphQL: ${sum("gql")}`, W / 2, 305, 20, C.ink);
+  ["REST: simple, cacheable, many URLs, fixed responses", "GraphQL: one URL, ask for exactly what you need", "SOAP: strict XML contracts, still used by banks"]
+    .forEach((l, i) => text(l, W / 2, 355 + i * 32, 18, [C.rest, C.gql, "#8e7cc3"][i]));
+  if (frame % 60 < 40) text("Press SPACE to play again", W / 2, 470, 22, C.ink);
+  if (frame % 30 === 0) burst(100 + Math.random() * 760, 100 + Math.random() * 200, C.yellow, 20);
+}
+
+function wrap(t, x, y, maxW, lh, size) {
+  const words = t.split(" "), lines = []; let line = "";
+  for (const w of words) { const test = line ? line + " " + w : w; if (ctx.measureText(test).width > maxW && line) { lines.push(line); line = w; } else line = test; }
+  lines.push(line);
+  lines.forEach((l, i) => text(l, x, y + (i - (lines.length - 1) / 2) * lh, size, C.ink));
+}
+
+function drawFx() {
+  particles.forEach(p => { ctx.fillStyle = p.color; ctx.globalAlpha = Math.min(1, p.life / 30); ctx.fillRect(p.x - 3, p.y - 3, 6, 6); });
+  ctx.globalAlpha = 1;
+  popups.forEach(p => { ctx.globalAlpha = Math.min(1, p.life / 30); outlined(p.text, p.x, p.y, 17, p.color); });
+  ctx.globalAlpha = 1;
+}
+
+function loop() {
+  update();
+  ctx.clearRect(0, 0, W, H);
+  ({ title: drawTitle, brief: drawBrief, play: drawPlay, result: drawResult,
+     quizIntro: drawQuizIntro, quiz: drawQuiz, end: drawEnd })[scene]();
+  drawFx();
+  requestAnimationFrame(loop);
+}
+cv.focus();
+loop();
+</script>
+</body>
+</html>

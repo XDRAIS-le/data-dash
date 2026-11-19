@@ -1,0 +1,451 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>API Arena</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Inter:wght@400;600&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+  /* Layout: header scoreboard, mission tabs, two side-by-side arenas (REST | GraphQL), then quiz */
+  :root {
+    --bg: #f3f5f9; --panel: #ffffff; --fg: #18202e; --muted: #5b6577; --line: #d9dee8;
+    --rest: #0f7b6c; --rest-soft: #dff3ef; --gql: #c2185b; --gql-soft: #fbe3ec;
+    --good: #1a7f37; --bad: #c62828; --code-bg: #f6f8fb;
+    --display: "Space Grotesk", system-ui, sans-serif;
+    --body: "Inter", system-ui, sans-serif;
+    --mono: "JetBrains Mono", Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0f141c; --panel: #171e29; --fg: #e6ebf3; --muted: #9aa5b8; --line: #2a3445;
+      --rest: #3cc9b2; --rest-soft: #143430; --gql: #ff5c9a; --gql-soft: #3a1828;
+      --good: #4cc66b; --bad: #ff6b6b; --code-bg: #111821; color-scheme: dark; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.55 var(--body); }
+  .wrap { max-width: 1200px; margin: 0 auto; padding: 24px 16px 60px; display: grid; gap: 20px; }
+  h1, h2, h3 { font-family: var(--display); margin: 0; text-wrap: balance; }
+  h1 { font-size: 2rem; }
+  h1 .r { color: var(--rest); } h1 .g { color: var(--gql); }
+  header { display: flex; flex-wrap: wrap; gap: 16px; align-items: end; justify-content: space-between; }
+  header p { margin: 4px 0 0; color: var(--muted); }
+  .score { font-family: var(--display); font-size: 1.1rem; background: var(--panel); border: 1px solid var(--line);
+    border-radius: 10px; padding: 10px 16px; font-variant-numeric: tabular-nums; }
+  .score b { font-size: 1.6rem; }
+
+  .tabs { display: flex; flex-wrap: wrap; gap: 8px; }
+  .tab { border: 1px solid var(--line); background: var(--panel); color: var(--fg); padding: 8px 14px; border-radius: 999px;
+    cursor: pointer; font: 600 14px var(--body); }
+  .tab[aria-selected="true"] { background: var(--fg); color: var(--bg); border-color: var(--fg); }
+  .tab .ok { color: var(--good); }
+  .tab[aria-selected="true"] .ok { color: inherit; }
+
+  .mission { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px 20px; }
+  .mission .eyebrow { text-transform: uppercase; letter-spacing: .08em; font-size: 12px; color: var(--muted); font-weight: 600; }
+  .mission h2 { font-size: 1.4rem; margin: 2px 0 6px; }
+  .mission p { margin: 0; max-width: 70ch; }
+  .needs { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+  .needs code { font-family: var(--mono); font-size: 13px; background: var(--code-bg); border: 1px solid var(--line); padding: 2px 8px; border-radius: 6px; }
+
+  .arena { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 860px) { .arena { grid-template-columns: 1fr; } }
+  .side { background: var(--panel); border: 1px solid var(--line); border-top: 4px solid var(--c); border-radius: 12px;
+    padding: 16px; display: grid; gap: 12px; align-content: start; min-width: 0; }
+  .side.rest { --c: var(--rest); --soft: var(--rest-soft); }
+  .side.gql  { --c: var(--gql);  --soft: var(--gql-soft); }
+  .side h3 { color: var(--c); font-size: 1.25rem; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  .badge { font: 600 12px var(--body); padding: 3px 10px; border-radius: 999px; background: var(--soft); color: var(--c); }
+  .badge.done { background: var(--good); color: #fff; }
+  .hint { color: var(--muted); font-size: 13px; margin: 0; }
+  .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; font-variant-numeric: tabular-nums; }
+  .stat { background: var(--soft); border-radius: 8px; padding: 8px 10px; }
+  .stat span { display: block; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+  .stat b { font-family: var(--display); font-size: 1.4rem; color: var(--c); }
+
+  .endpoints { display: flex; flex-wrap: wrap; gap: 6px; }
+  .ep { font: 12.5px var(--mono); border: 1px solid var(--line); background: var(--code-bg); color: var(--fg);
+    padding: 5px 8px; border-radius: 6px; cursor: pointer; }
+  .ep:hover { border-color: var(--c); }
+  .ep.called { background: var(--soft); border-color: var(--c); }
+  .ep b { color: var(--c); }
+  .row { display: flex; gap: 8px; }
+  input[type=text], textarea { width: 100%; font: 13.5px/1.5 var(--mono); background: var(--code-bg); color: var(--fg);
+    border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+  textarea { min-height: 170px; resize: vertical; }
+  button.go { background: var(--c); color: #fff; border: 0; border-radius: 8px; padding: 8px 16px; font: 600 14px var(--body); cursor: pointer; white-space: nowrap; }
+  button.ghost { background: transparent; color: var(--muted); border: 1px solid var(--line); border-radius: 8px; padding: 6px 12px; cursor: pointer; font: 13px var(--body); }
+  button:focus-visible, .ep:focus-visible, .tab:focus-visible { outline: 3px solid var(--c, var(--fg)); outline-offset: 2px; }
+  .fields { display: flex; flex-wrap: wrap; gap: 4px; font: 12px var(--mono); color: var(--muted); }
+  .log { font: 12px/1.5 var(--mono); background: var(--code-bg); border: 1px solid var(--line); border-radius: 8px;
+    padding: 10px; max-height: 260px; overflow: auto; white-space: pre; margin: 0; }
+  .log .req { color: var(--c); font-weight: 600; }
+
+  .verdict { display: none; background: var(--panel); border: 2px solid var(--fg); border-radius: 12px; padding: 16px 20px; }
+  .verdict.show { display: grid; gap: 12px; }
+  .bars { display: grid; gap: 8px; }
+  .bar { display: grid; grid-template-columns: 90px 1fr 110px; align-items: center; gap: 10px; font-size: 13px; font-variant-numeric: tabular-nums; }
+  .bar .track { background: var(--code-bg); border-radius: 4px; height: 16px; overflow: hidden; }
+  .bar .fill { height: 100%; border-radius: 4px; }
+
+  .quiz { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 20px; display: grid; gap: 12px; }
+  .quiz .q { font-size: 1.15rem; font-weight: 600; max-width: 70ch; }
+  .choices { display: flex; flex-wrap: wrap; gap: 10px; }
+  .choice { border: 2px solid var(--line); background: var(--panel); color: var(--fg); padding: 10px 22px; border-radius: 10px;
+    font: 700 15px var(--display); cursor: pointer; }
+  .choice:hover { border-color: var(--fg); }
+  .choice.right { background: var(--good); color: #fff; border-color: var(--good); }
+  .choice.wrong { background: var(--bad); color: #fff; border-color: var(--bad); }
+  .explain { color: var(--muted); margin: 0; min-height: 1.5em; }
+  .progress { font-size: 13px; color: var(--muted); }
+  footer { color: var(--muted); font-size: 13px; }
+  footer a { color: inherit; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div>
+      <h1>API Arena: <span class="r">REST</span> vs <span class="g">GraphQL</span></h1>
+      <p>Complete each mission with both APIs. Fewer requests and fewer bytes earn more points.</p>
+    </div>
+    <div class="score">Score <b id="score">0</b></div>
+  </header>
+
+  <nav class="tabs" id="tabs" role="tablist"></nav>
+
+  <section class="mission" id="mission"></section>
+
+  <section class="arena">
+    <!-- REST side -->
+    <div class="side rest">
+      <h3>REST <span class="badge" id="restBadge">in progress</span></h3>
+      <p class="hint">Many URLs, one per resource. Click an endpoint (or type one) to send a GET request.</p>
+      <div class="stats">
+        <div class="stat"><span>Requests</span><b id="restReq">0</b></div>
+        <div class="stat"><span>Bytes</span><b id="restBytes">0</b></div>
+        <div class="stat"><span>Points</span><b id="restPts">–</b></div>
+      </div>
+      <div class="endpoints" id="endpoints"></div>
+      <div class="row">
+        <input type="text" id="restUrl" value="/api/users/1/" aria-label="REST URL">
+        <button class="go" id="restGo">GET</button>
+      </div>
+      <pre class="log" id="restLog">Responses will appear here.</pre>
+      <button class="ghost" id="restReset">Reset REST side</button>
+    </div>
+
+    <!-- GraphQL side -->
+    <div class="side gql">
+      <h3>GraphQL <span class="badge" id="gqlBadge">in progress</span></h3>
+      <p class="hint">One URL (<code>/graphql/</code>). Write a query that asks for exactly the fields you need.</p>
+      <div class="stats">
+        <div class="stat"><span>Requests</span><b id="gqlReq">0</b></div>
+        <div class="stat"><span>Bytes</span><b id="gqlBytes">0</b></div>
+        <div class="stat"><span>Points</span><b id="gqlPts">–</b></div>
+      </div>
+      <div class="fields">
+        <span><b>User:</b> id name email phone city bio joined posts</span>
+        <span><b>Post:</b> id title body likes comments</span>
+        <span><b>Comment:</b> id author text</span>
+        <span><b>Query:</b> user(id: Int!) users</span>
+      </div>
+      <textarea id="gqlQuery" spellcheck="false" aria-label="GraphQL query"></textarea>
+      <div class="row">
+        <button class="go" id="gqlGo">Run query (POST)</button>
+        <button class="ghost" id="gqlReset">Reset GraphQL side</button>
+      </div>
+      <pre class="log" id="gqlLog">Responses will appear here.</pre>
+    </div>
+  </section>
+
+  <section class="verdict" id="verdict"></section>
+
+  <section class="quiz" id="quiz">
+    <h2>Lightning round: REST, GraphQL or SOAP?</h2>
+    <div class="progress" id="qProgress"></div>
+    <div class="q" id="qText"></div>
+    <div class="choices" id="qChoices"></div>
+    <p class="explain" id="qExplain"></p>
+    <div><button class="ghost" id="qNext" hidden>Next question</button></div>
+  </section>
+
+  <footer>Explore the full GraphQL schema in <a href="/graphql/" target="_blank">GraphiQL</a> · REST list: <a href="/api/users/" target="_blank">/api/users/</a></footer>
+</div>
+
+<script>
+// ------------------------------------------------------------------
+// Missions: what the "frontend" needs, and what counts as complete
+// ------------------------------------------------------------------
+const MISSIONS = [
+  {
+    title: "Profile card",
+    goal: "Show Sara's (user 1) name and city on a small profile card.",
+    needs: ["user 1 → name", "user 1 → city"],
+    rest: ["/api/users/1/"],
+    gql: ["user.name", "user.city"],
+    starter: "{\n  user(id: 1) {\n    \n  }\n}",
+    lesson: "REST sent the whole user: email, phone, bio, join date… you only needed 2 fields. That is <b>over-fetching</b>. GraphQL returned only <code>name</code> and <code>city</code>."
+  },
+  {
+    title: "Blog list",
+    goal: "Show Sara's name and the titles of all her posts.",
+    needs: ["user 1 → name", "user 1 → posts → title"],
+    rest: ["/api/users/1/", "/api/users/1/posts/"],
+    gql: ["user.name", "user.posts.title"],
+    starter: "{\n  user(id: 1) {\n    name\n  }\n}",
+    lesson: "REST needed a second round trip because one endpoint did not have everything. That is <b>under-fetching</b>. GraphQL followed the relation <code>user → posts</code> in one request."
+  },
+  {
+    title: "Full feed",
+    goal: "Show Sara's name, her post titles, and the author of every comment on each post.",
+    needs: ["user 1 → name", "posts → title", "posts → comments → author"],
+    rest: ["/api/users/1/", "/api/users/1/posts/", "/api/posts/1/comments/", "/api/posts/2/comments/", "/api/posts/3/comments/"],
+    gql: ["user.name", "user.posts.title", "user.posts.comments.author"],
+    starter: "{\n  user(id: 1) {\n    name\n    posts {\n      title\n    }\n  }\n}",
+    lesson: "REST needed 1 + 1 + N requests (one per post). With 100 posts that is 102 requests. This is the <b>N+1 problem</b>. GraphQL still used 1 request, but the server resolvers do the N+1 work instead, which is why tools like DataLoader exist."
+  },
+  {
+    title: "Directory",
+    goal: "List the names of all users.",
+    needs: ["users → name"],
+    rest: ["/api/users/"],
+    gql: ["users.name"],
+    starter: "{\n  \n}",
+    lesson: "Both took 1 request. REST still over-fetched, but its <code>GET /api/users/</code> URL can be cached by the browser and CDNs for free. GraphQL queries are usually POSTs to one URL, so caching needs extra tools. <b>REST wins on simplicity and caching.</b>"
+  }
+];
+
+const ENDPOINTS = [
+  "/api/users/", "/api/users/1/", "/api/users/2/", "/api/users/3/",
+  "/api/users/1/posts/", "/api/users/2/posts/", "/api/users/3/posts/",
+  "/api/posts/1/comments/", "/api/posts/2/comments/", "/api/posts/3/comments/",
+  "/api/posts/4/comments/", "/api/posts/5/comments/"
+];
+
+// Per-mission state
+const state = MISSIONS.map(m => ({
+  rest: { req: 0, bytes: 0, called: new Set(), done: false, pts: 0 },
+  gql:  { req: 0, bytes: 0, done: false, pts: 0, query: m.starter }
+}));
+let current = 0;
+
+const $ = id => document.getElementById(id);
+
+// ------------------------------------------------------------------
+// Rendering
+// ------------------------------------------------------------------
+function renderTabs() {
+  $("tabs").innerHTML = MISSIONS.map((m, i) => {
+    const s = state[i];
+    const ok = s.rest.done && s.gql.done ? ' <span class="ok">✓</span>' : "";
+    return `<button class="tab" role="tab" aria-selected="${i === current}" data-i="${i}">${i + 1}. ${m.title}${ok}</button>`;
+  }).join("");
+  document.querySelectorAll(".tab").forEach(b => b.onclick = () => selectMission(+b.dataset.i));
+}
+
+function renderMission() {
+  const m = MISSIONS[current];
+  $("mission").innerHTML = `
+    <div class="eyebrow">Mission ${current + 1} of ${MISSIONS.length}</div>
+    <h2>${m.title}</h2>
+    <p>${m.goal}</p>
+    <div class="needs">${m.needs.map(n => `<code>${n}</code>`).join("")}</div>`;
+}
+
+function renderEndpoints() {
+  const s = state[current].rest;
+  $("endpoints").innerHTML = ENDPOINTS.map(e =>
+    `<button class="ep ${s.called.has(e) ? "called" : ""}" data-url="${e}"><b>GET</b> ${e}</button>`).join("");
+  document.querySelectorAll(".ep").forEach(b => b.onclick = () => { $("restUrl").value = b.dataset.url; restCall(b.dataset.url); });
+}
+
+function renderStats() {
+  const s = state[current];
+  $("restReq").textContent = s.rest.req;
+  $("restBytes").textContent = s.rest.bytes.toLocaleString();
+  $("restPts").textContent = s.rest.done ? s.rest.pts : "–";
+  $("gqlReq").textContent = s.gql.req;
+  $("gqlBytes").textContent = s.gql.bytes.toLocaleString();
+  $("gqlPts").textContent = s.gql.done ? s.gql.pts : "–";
+  setBadge("restBadge", s.rest.done);
+  setBadge("gqlBadge", s.gql.done);
+  $("score").textContent = state.reduce((t, x) => t + x.rest.pts + x.gql.pts, 0) + quizScore;
+  renderVerdict();
+  renderTabs();
+}
+
+function setBadge(id, done) {
+  $(id).textContent = done ? "mission complete" : "in progress";
+  $(id).classList.toggle("done", done);
+}
+
+function renderVerdict() {
+  const s = state[current], m = MISSIONS[current];
+  const v = $("verdict");
+  if (!(s.rest.done && s.gql.done)) { v.classList.remove("show"); return; }
+  const maxB = Math.max(s.rest.bytes, s.gql.bytes, 1);
+  const maxR = Math.max(s.rest.req, s.gql.req, 1);
+  const bar = (label, val, max, color, unit) =>
+    `<div class="bar"><span>${label}</span><div class="track"><div class="fill" style="width:${val / max * 100}%;background:${color}"></div></div><span>${val.toLocaleString()} ${unit}</span></div>`;
+  v.innerHTML = `
+    <h3>Results: ${m.title}</h3>
+    <div class="bars">
+      ${bar("REST", s.rest.req, maxR, "var(--rest)", "requests")}
+      ${bar("GraphQL", s.gql.req, maxR, "var(--gql)", "requests")}
+      ${bar("REST", s.rest.bytes, maxB, "var(--rest)", "bytes")}
+      ${bar("GraphQL", s.gql.bytes, maxB, "var(--gql)", "bytes")}
+    </div>
+    <p>${m.lesson}</p>`;
+  v.classList.add("show");
+}
+
+function selectMission(i) {
+  state[current].gql.query = $("gqlQuery").value;
+  current = i;
+  $("gqlQuery").value = state[i].gql.query;
+  $("restLog").textContent = "Responses will appear here.";
+  $("gqlLog").textContent = "Responses will appear here.";
+  renderMission(); renderEndpoints(); renderStats();
+}
+
+// ------------------------------------------------------------------
+// REST side: real GET requests to the Django REST views
+// ------------------------------------------------------------------
+async function restCall(url) {
+  const s = state[current].rest, m = MISSIONS[current];
+  s.req++;
+  let text;
+  try {
+    const res = await fetch(url);
+    text = await res.text();
+    s.bytes += text.length;
+    s.called.add(url);
+    let pretty = text;
+    try { pretty = JSON.stringify(JSON.parse(text), null, 2); } catch (e) { pretty = `HTTP ${res.status}`; }
+    $("restLog").innerHTML = `<span class="req">GET ${url}  →  ${res.status} (${text.length} bytes)</span>\n` + escapeHtml(pretty);
+  } catch (e) {
+    $("restLog").textContent = "Request failed: " + e.message;
+  }
+  if (!s.done && m.rest.every(u => s.called.has(u))) {
+    s.done = true;
+    const wasted = Math.max(0, s.req - m.rest.length);
+    s.pts = Math.max(20, 100 - wasted * 10);
+  }
+  renderEndpoints(); renderStats();
+}
+
+// ------------------------------------------------------------------
+// GraphQL side: real POST to the graphene-django endpoint
+// ------------------------------------------------------------------
+function hasPath(obj, path) {
+  if (!path.length) return obj !== undefined && obj !== null;
+  if (Array.isArray(obj)) return obj.length > 0 && obj.every(x => hasPath(x, path));
+  if (obj === null || typeof obj !== "object") return false;
+  return hasPath(obj[path[0]], path.slice(1));
+}
+
+async function gqlCall() {
+  const s = state[current].gql, m = MISSIONS[current];
+  const query = $("gqlQuery").value;
+  s.req++;
+  try {
+    const res = await fetch("/graphql/", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query })
+    });
+    const text = await res.text();
+    s.bytes += text.length;
+    const json = JSON.parse(text);
+    $("gqlLog").innerHTML = `<span class="req">POST /graphql/  →  ${res.status} (${text.length} bytes)</span>\n` + escapeHtml(JSON.stringify(json, null, 2));
+    if (!s.done && !json.errors && json.data && m.gql.every(p => hasPath(json.data, p.split(".")))) {
+      s.done = true;
+      const wasted = s.req - 1;
+      s.pts = Math.max(20, 100 - wasted * 10);
+    }
+  } catch (e) {
+    $("gqlLog").textContent = "Request failed: " + e.message;
+  }
+  renderStats();
+}
+
+function escapeHtml(t) { return t.replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c])); }
+
+$("restGo").onclick = () => restCall($("restUrl").value.trim());
+$("restUrl").onkeydown = e => { if (e.key === "Enter") restCall($("restUrl").value.trim()); };
+$("gqlGo").onclick = gqlCall;
+$("gqlQuery").onkeydown = e => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) gqlCall(); };
+$("restReset").onclick = () => { state[current].rest = { req: 0, bytes: 0, called: new Set(), done: false, pts: 0 }; $("restLog").textContent = "Responses will appear here."; renderEndpoints(); renderStats(); };
+$("gqlReset").onclick = () => { state[current].gql = { req: 0, bytes: 0, done: false, pts: 0, query: MISSIONS[current].starter }; $("gqlQuery").value = MISSIONS[current].starter; $("gqlLog").textContent = "Responses will appear here."; renderStats(); };
+
+// ------------------------------------------------------------------
+// Lightning quiz
+// ------------------------------------------------------------------
+const QUIZ = [
+  ["A bank sends money transfers to another bank. It needs a strict contract, WS-Security and guaranteed delivery.", "SOAP",
+   "SOAP has formal WSDL contracts and built-in standards like WS-Security, which is why banks and governments still use it."],
+  ["A mobile app on a slow 3G network needs a few fields from users, posts and comments on one screen.", "GraphQL",
+   "GraphQL fetches nested, related data in one request and returns only the requested fields, saving data on slow networks."],
+  ["A public weather API used by thousands of apps. Responses should be cached by browsers and CDNs.", "REST",
+   "REST uses GET on stable URLs, so standard HTTP caching works out of the box."],
+  ["Errors are reported with HTTP status codes like 404 Not Found and 201 Created.", "REST",
+   "REST relies on HTTP status codes. GraphQL usually returns 200 OK with an \"errors\" array in the body."],
+  ["The API always answers 200 OK and puts problems inside an \"errors\" array.", "GraphQL",
+   "That is the GraphQL convention: one endpoint, and errors live in the response body."],
+  ["Messages are XML envelopes with a Header and a Body, described by a WSDL file.", "SOAP",
+   "SOAP messages are always XML envelopes, and WSDL describes every operation."],
+  ["One endpoint, a strongly typed schema, and clients can ask the server to describe itself (introspection).", "GraphQL",
+   "GraphQL schemas are typed and introspectable, which powers tools like GraphiQL autocomplete."],
+  ["A small team builds simple CRUD for a to-do app: create, read, update and delete tasks.", "REST",
+   "For simple CRUD, REST maps neatly to POST, GET, PUT and DELETE and is the easiest to build and learn."],
+  ["The frontend team changes screens every week and doesn't want to wait for new backend endpoints.", "GraphQL",
+   "With GraphQL the client chooses fields itself, so new screens often need no backend change and no /v2 endpoints."],
+  ["Each resource has its own URL, like /users/1 and /users/1/posts.", "REST",
+   "Resources identified by URLs is the core idea of REST."]
+];
+let qi = 0, quizScore = 0, answered = false;
+
+function renderQuiz() {
+  if (qi >= QUIZ.length) {
+    $("qProgress").textContent = "Finished!";
+    $("qText").textContent = `You scored ${quizScore / 50} / ${QUIZ.length} in the lightning round.`;
+    $("qChoices").innerHTML = "";
+    $("qExplain").textContent = "";
+    $("qNext").hidden = false;
+    $("qNext").textContent = "Play again";
+    return;
+  }
+  const [q] = QUIZ[qi];
+  answered = false;
+  $("qProgress").textContent = `Question ${qi + 1} of ${QUIZ.length} · 50 points each`;
+  $("qText").textContent = q;
+  $("qExplain").textContent = "";
+  $("qNext").hidden = true;
+  $("qChoices").innerHTML = ["REST", "GraphQL", "SOAP"].map(c => `<button class="choice" data-c="${c}">${c}</button>`).join("");
+  document.querySelectorAll(".choice").forEach(b => b.onclick = () => answer(b));
+}
+
+function answer(btn) {
+  if (answered) return;
+  answered = true;
+  const [, correct, why] = QUIZ[qi];
+  document.querySelectorAll(".choice").forEach(b => { if (b.dataset.c === correct) b.classList.add("right"); });
+  if (btn.dataset.c === correct) { quizScore += 50; $("qExplain").innerHTML = "<b>Correct!</b> " + why; }
+  else { btn.classList.add("wrong"); $("qExplain").innerHTML = `<b>It's ${correct}.</b> ` + why; }
+  $("qNext").hidden = false;
+  $("qNext").textContent = qi === QUIZ.length - 1 ? "See result" : "Next question";
+  renderStats();
+}
+
+$("qNext").onclick = () => {
+  if (qi >= QUIZ.length) { qi = 0; quizScore = 0; renderStats(); } else { qi++; }
+  renderQuiz();
+};
+
+// Boot
+$("gqlQuery").value = MISSIONS[0].starter;
+selectMission(0);
+renderQuiz();
+</script>
+</body>
+</html>
